@@ -1,0 +1,122 @@
+########################################################################################################################################################
+###  This code can be pasted into the Python console within ArcGIS once you have changed the file name below   
+###  Script Name: Landslide Shape Tool
+###  Description: Fits an ellipse to landslide polygons and measures the length to width ratio and goodness of fit of the ellipse. For more info see Taylor, F.E., Malamud, B.D., Witt, A. and Guzzetti, F., Landslide shape, ellipticity and length‐to‐width ratios. Earth Surface Processes and Landforms.
+###  Created By:  Faith Taylor (faith.taylor@port.ac.uk)
+###  Date:        June 2018.
+###  Note: Please read the script below - there is one place where you will need to add the file name for your landslide inventory shapefile. In the longer term, a QGIS version of this code will also be released, but this is taking some time due to the switch to QGIS3. If you have any queries or suggestions, please contact me at the email address above. The tool will output a series of files and variables which are described below.
+###  Info about the script:
+###
+###  In original landslide shapefile: 
+###  LSArea = Area of original landslide polygon in square meters
+###  LSPerim = Perimeter of original landslide polygon in meters 
+###  xCentroid & yCentroid = The x and y centroids of the original landslide polygon 
+### 
+###  ls_boundingbox.shp:
+###  This file can largely be ignored. We use the bounding box tool to calculate the orientation of the landslide ('MBG_Orientation) 
+###
+###  ls_convexhull.shp:
+###  LWR = Length to width ratio of the landslide ellipse fit to the landslide polygon
+###  L = Length of the ellipse before it is scaled down to be proportional to the original lanslide area (do not use, for more info see the paper)
+###  W = Width of the ellipse before it is scaled down to be proportional to the original lanslide area (do not use, for more info see the paper)
+###  L_Sc = Length of the ellipse after scaling to the original landslide area
+###  W_Sc = Width of the ellipse after scaling to the original landslide area
+###  CH_area = Area of the convex hull in square meters 
+###  CH_Perim = Perimeter of the convex hull in meters
+###  
+###  Landslide_Ellipse_Lines.shp
+###  Can be ignored. This is the output of the ArcGIS table to ellipse tool. We then convert these lines to polygons 
+### 
+###  Landslide_Ellipse_Polygons.shp
+###  This is your output shapefile of ellipses fit to landslide polygons. Most of the important information is contained in the ls_convexhull.shp file
+###
+###  Area_Intersection.shp
+###  This file is the output of overlaying the original landslide polygons with the landslide ellipses. I.e., the area of intersection between the two shapes
+###  A_Intersection = Area of intersection between the landslide polygon and ellipse polygon in square meters
+###  E = Ellipticity. Ranges -1 to 1. -1 indicates a very poor fit of the ellipse. 1 is a perfect fit. We use a threshold of E >=0.5 to select landslides that are well modelled by an ellipse using this method 
+###
+########################################################################################################################################################
+
+# Import necessary modules 
+import arcpy 
+import os
+
+# YOUR INPUT REQUIRED - replace the name 'subset_ls_test' with the name of your landslide inventory shapefile 
+inFeatures = "subset_ls_test"
+
+# Set up names of output files 
+outputCH = 'ls_convexhull'
+outputBB = 'ls_boundingbox'
+
+# Set local variables
+fieldName1 = "xCentroid"
+fieldName2 = "yCentroid"
+fieldName3 = "LSArea"
+fieldName4 = "LSPerim"
+fieldPrecision = 20
+fieldScale = 8
+
+# Note if any of the field names above (e.g., 'xCentroid') already exist in your shapefile, the following code will not work. You can change the field names above or change the field names in your shapefile  
+# Add fields
+arcpy.AddField_management(inFeatures, fieldName1, "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(inFeatures, fieldName2, "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(inFeatures, fieldName3, "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(inFeatures, fieldName4, "DOUBLE", fieldPrecision, fieldScale)
+
+# Calculate fields
+arcpy.CalculateField_management(inFeatures, fieldName1, "!SHAPE.CENTROID.X!", "PYTHON_9.3")
+arcpy.CalculateField_management(inFeatures, fieldName2, "!SHAPE.CENTROID.Y!", "PYTHON_9.3")
+arcpy.CalculateField_management(inFeatures, fieldName3,"!area!", "PYTHON",code_block="")
+arcpy.CalculateField_management(inFeatures, fieldName4,"!SHAPE.LENGTH!", "PYTHON_9.3")
+                             
+# Fit oriented minimum bounding rectangle to each landslide polygon (used to calculate orientation)
+arcpy.MinimumBoundingGeometry_management(inFeatures, outputBB, geometry_type="RECTANGLE_BY_AREA", group_option="NONE", group_field="", mbg_fields_option="MBG_FIELDS")
+
+# Join the minimum bounding geometry table to the landslide shapefile table 
+arcpy.AddJoin_management(inFeatures, "FID", outputBB, "ORIG_FID", "KEEP_ALL")
+	
+# Fit convex hull to each landslide polygon 
+arcpy.MinimumBoundingGeometry_management(inFeatures, outputCH, geometry_type="CONVEX_HULL", group_option="NONE", group_field="", mbg_fields_option="MBG_FIELDS")
+arcpy.AddField_management(outputCH, 'CH_Area', "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(outputCH, 'CH_Perim', "DOUBLE", fieldPrecision, fieldScale)
+arcpy.CalculateField_management(outputCH, "CH_Area", expression="[Shape_Area]", expression_type="VB", code_block="")
+arcpy.CalculateField_management(outputCH, "CH_Perim", expression="[Shape_Length]", expression_type="VB", code_block="")
+								
+#Calculate length to width ratio 
+arcpy.AddField_management(outputCH, 'LWR', "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(outputCH, 'L', "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(outputCH, 'W', "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(outputCH, 'L_sc', "DOUBLE", fieldPrecision, fieldScale)
+arcpy.AddField_management(outputCH, 'W_sc', "DOUBLE", fieldPrecision, fieldScale)
+lwr_expression = "(4*math.pi * !CH_Area! )/((math.pow(!CH_Perim!,2)) -  math.sqrt((math.pow(!CH_Perim!,4))-16*(math.pow(math.pi,2))* (math.pow(!CH_Area!, 2))))"
+arcpy.CalculateField_management(outputCH, "LWR", lwr_expression, expression_type="PYTHON")
+
+# Calculate length and width unscaled - these are not the final values to use
+len_express = '(2 * (math.sqrt((!CH_Area!*!LWR!)/math.pi)))'
+wid_express = '(2 * (math.sqrt(!CH_Area!/(math.pi * !LWR!))))'
+arcpy.CalculateField_management(outputCH, "L", len_express, expression_type="PYTHON")
+arcpy.CalculateField_management(outputCH, "W", wid_express, expression_type="PYTHON")
+
+# Calculate the scaled length and width 
+al_name = ('!'+str(inFeatures)+'_LSArea'+'!')
+len_sc_expression = '!L! * math.sqrt('+str(al_name)+'/!CH_Area!)'
+wid_sc_expression = '!W!* math.sqrt('+str(al_name)+'/!CH_Area!)'
+arcpy.CalculateField_management(outputCH, "L_sc", len_sc_expression, expression_type="PYTHON")
+arcpy.CalculateField_management(outputCH, "W_sc", wid_sc_expression, expression_type="PYTHON")
+
+# Note that the below may be very slow or crash if you are analysing a large number of landslides (i.e., >5000). If the code fails, try splitting your inventory into a series of more manageable files
+# Plot those ellipses 
+x_field_name = (str(inFeatures)+'_xCentroid')
+y_field_name = (str(inFeatures)+'_yCentroid')
+arcpy.TableToEllipse_management(outputCH, 'Landslide_Ellipse_Lines', x_field_name, y_field_name, 'L_sc', 'W_sc', 'METERS', 'MBG_Orientation', 'DEGREES',"ls_boundingbox_ORIG_FID")
+arcpy.FeatureToPolygon_management ("Landslide_Ellipse_Lines", 'Landslide_Ellipse_Polygons')
+
+# Overlay the landslide ellipses and original landslide areas 
+arcpy.Intersect_analysis(['Landslide_Ellipse_Polygons', inFeatures], 'Area_Intersection', 'ALL')
+arcpy.AddField_management('Area_Intersection', 'A_Intersection', "DOUBLE", fieldPrecision, fieldScale)
+arcpy.CalculateField_management('Area_Intersection', 'A_Intersection',expression="[Shape_Area]", expression_type="VB", code_block="")
+
+# Calculate ellipticity
+arcpy.AddField_management('Area_Intersection', 'E', "DOUBLE", fieldPrecision, fieldScale) 
+elip_expression = '1-2*((' + str(al_name) + '-!A_Intersection!)/'+str(al_name)+')'
+arcpy.CalculateField_management('Area_Intersection', "E", elip_expression, expression_type="PYTHON")
